@@ -1,0 +1,48 @@
+{
+  "name": "MedTrack Family Tablet Tracker",
+  "short_name": "MedTrack",
+  "description": "Family Medication Tracker & Reminder PWA",
+  "start_url": "./?source=pwa",
+  "scope": "./",
+  "display": "standalone",
+  "background_color": "#0f172a",
+  "theme_color": "#4f46e5",
+  "orientation": "portrait",
+  "icons": [
+    {
+      "src": "./icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "./icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any maskable"
+    }
+  ],
+  "shortcuts": [
+    {
+      "name": "☀️ Mark Morning Taken",
+      "short_name": "Morning Meds",
+      "description": "Mark all morning tablets as taken immediately",
+      "url": "./?action=quick-log&slot=morning",
+      "icons": [{ "src": "./icon-192.png", "sizes": "192x192", "type": "image/png" }]
+    },
+    {
+      "name": "🌤️ Mark Afternoon Taken",
+      "short_name": "Afternoon Meds",
+      "description": "Mark all afternoon tablets as taken immediately",
+      "url": "./?action=quick-log&slot=afternoon",
+      "icons": [{ "src": "./icon-192.png", "sizes": "192x192", "type": "image/png" }]
+    },
+    {
+      "name": "🌙 Mark Night Taken",
+      "short_name": "Night Meds",
+      "description": "Mark all night tablets as taken immediately",
+      "url": "./?action=quick-log&slot=night",
+      "icons": [{ "src": "./icon-192.png", "sizes": "192x192", "type": "image/png" }]
+    }
+  ]
+}
