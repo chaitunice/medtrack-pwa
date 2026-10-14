@@ -173,8 +173,8 @@ const getScheduleBadgeText = (med) => {
   if (freq === 'schedule') {
     const n = parseInt(med.intervalDays, 10) || 1;
     const base = n === 1 ? 'Daily Course' : `Every ${n} Days`;
-    if (med.endDate) return `${base} (until${med.endDate})`;
-    return `${base} (from${med.startDate || TODAY_STR})`;
+    if (med.endDate) return `${base} (until ${med.endDate})`;
+    return `${base} (from ${med.startDate || TODAY_STR})`;
   }
   return 'Daily';
 };
@@ -378,7 +378,7 @@ export default function App() {
       (m) => m.slots.includes(slotId) && isMedScheduledForDate(m, todayKey)
     );
     if (slotMeds.length === 0) {
-      showToast(`No ${slotId} tablets scheduled today for${activeMember?.name}`);
+      showToast(`No ${slotId} tablets scheduled today for ${activeMember?.name}`);
       return;
     }
     updateDataAndSyncFile((prev) => {
@@ -389,7 +389,7 @@ export default function App() {
       return { ...prev, logs: { ...prev.logs, [todayKey]: dayLogs } };
     });
     const slotInfo = SLOTS.find((s) => s.id === slotId);
-    showToast(`${slotInfo?.emoji} Marked today's ${slotInfo?.label} tablets as${status}!`);
+    showToast(`${slotInfo?.emoji} Marked today's ${slotInfo?.label} tablets as ${status}!`);
   };
 
   const handleAddMember = (e) => {
@@ -885,7 +885,7 @@ export default function App() {
                     </div>
                     <button
                       onClick={() =>
-                        showToast(`${slot.emoji} Reminder: Take ${activeMember?.name}'s${slot.label} tablets (check Before/After food)!`)
+                        showToast(`${slot.emoji} Reminder: Take ${activeMember?.name}'s ${slot.label} tablets (check Before/After food)!`)
                       }
                       className="w-full text-xs bg-slate-800 hover:bg-slate-700 text-slate-200 py-2 rounded-lg border border-slate-700 transition cursor-pointer"
                     >
@@ -1140,4 +1140,165 @@ export default function App() {
                           prev.includes(s.id) ? prev.filter((x) => x !== s.id) : [...prev, s.id]
                         )
                       }
-                      className={`py-2 px-2 rounded-xl text-xs font-medium
+                      className={`py-2 px-2 rounded-xl text-xs font-medium border flex items-center justify-center gap-1.5 cursor-pointer ${
+                        selected
+                          ? 'border-indigo-500 bg-indigo-500/20 text-white'
+                          : 'border-slate-800 bg-slate-950 text-slate-400'
+                      }`}
+                    >
+                      <span>{s.emoji}</span>
+                      <span>{s.label}</span>
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+
+            {/* 3. Frequency / Schedule Selector (Daily, Weekly, Schedule Based) */}
+            <div className="space-y-2">
+              <label className="text-xs font-semibold text-slate-300 flex items-center gap-1.5">
+                <CalendarClock className="w-3.5 h-3.5 text-indigo-400" />
+                <span>Schedule Type</span>
+              </label>
+              <div className="grid grid-cols-3 gap-2">
+                {[
+                  { id: 'daily', label: 'Daily' },
+                  { id: 'weekly', label: 'Weekly' },
+                  { id: 'schedule', label: 'Custom Schedule' }
+                ].map((tab) => (
+                  <button
+                    type="button"
+                    key={tab.id}
+                    onClick={() => setNewMedFreqType(tab.id)}
+                    className={`py-2 px-2 rounded-xl text-xs font-semibold border transition cursor-pointer ${
+                      newMedFreqType === tab.id
+                        ? 'border-emerald-500 bg-emerald-500/20 text-emerald-300'
+                        : 'border-slate-800 bg-slate-950 text-slate-400'
+                    }`}
+                  >
+                    {tab.label}
+                  </button>
+                ))}
+              </div>
+
+              {/* Conditional Sub-Options for WEEKLY */}
+              {newMedFreqType === 'weekly' && (
+                <div className="p-3 rounded-xl bg-slate-950 border border-slate-800 space-y-2">
+                  <div className="text-[11px] text-slate-400">Select which days of the week:</div>
+                  <div className="grid grid-cols-7 gap-1.5">
+                    {WEEKDAY_LABELS.map((w) => {
+                      const active = newMedWeekDays.includes(w.day);
+                      return (
+                        <button
+                          type="button"
+                          key={w.day}
+                          onClick={() =>
+                            setNewMedWeekDays((prev) =>
+                              prev.includes(w.day) ? prev.filter((d) => d !== w.day) : [...prev, w.day]
+                            )
+                          }
+                          className={`py-2 rounded-lg text-xs font-bold border transition cursor-pointer ${
+                            active
+                              ? 'bg-indigo-600 border-indigo-400 text-white'
+                              : 'bg-slate-900 border-slate-800 text-slate-400'
+                          }`}
+                        >
+                          {w.name}
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
+
+              {/* Conditional Sub-Options for CUSTOM SCHEDULE (Every N Days & Start/End Date) */}
+              {newMedFreqType === 'schedule' && (
+                <div className="p-3 rounded-xl bg-slate-950 border border-slate-800 space-y-3 text-xs">
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="text-slate-300">Repeat every:</span>
+                    <div className="flex items-center gap-1.5">
+                      <input
+                        type="number"
+                        min="1"
+                        max="90"
+                        value={newMedInterval}
+                        onChange={(e) => setNewMedInterval(e.target.value)}
+                        className="w-16 bg-slate-900 border border-slate-700 rounded-lg px-2.5 py-1.5 text-center text-white font-bold"
+                      />
+                      <span className="text-slate-400">days</span>
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-2">
+                    <div>
+                      <label className="block text-[10px] text-slate-400 mb-1">Start Date</label>
+                      <input
+                        type="date"
+                        value={newMedStartDate}
+                        onChange={(e) => setNewMedStartDate(e.target.value)}
+                        className="w-full bg-slate-900 border border-slate-700 rounded-lg px-2.5 py-1.5 text-xs text-white"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-[10px] text-slate-400 mb-1">End Date (Optional)</label>
+                      <input
+                        type="date"
+                        value={newMedEndDate}
+                        onChange={(e) => setNewMedEndDate(e.target.value)}
+                        className="w-full bg-slate-900 border border-slate-700 rounded-lg px-2.5 py-1.5 text-xs text-white"
+                      />
+                    </div>
+                  </div>
+                </div>
+              )}
+            </div>
+
+            <div className="flex justify-end gap-2 pt-2 border-t border-slate-800">
+              <button
+                type="button"
+                onClick={() => setShowAddMed(false)}
+                className="px-4 py-2 rounded-xl text-xs bg-slate-800 text-slate-300 cursor-pointer"
+              >
+                Cancel
+              </button>
+              <button
+                type="submit"
+                className="px-4 py-2 rounded-xl text-xs bg-indigo-600 hover:bg-indigo-500 text-white font-semibold cursor-pointer"
+              >
+                Save Tablet
+              </button>
+            </div>
+          </form>
+        </div>
+      )}
+
+      {/* Bottom Navigation */}
+      <nav className="fixed bottom-0 inset-x-0 z-30 bg-slate-900/95 backdrop-blur-md border-t border-slate-800">
+        <div className="max-w-4xl mx-auto grid grid-cols-5 py-2">
+          {[
+            { id: 'today', label: 'Today', icon: CheckCircle2 },
+            { id: 'weekly', label: 'Weekly Grid', icon: Calendar },
+            { id: 'reminders', label: 'Reminders', icon: Bell },
+            { id: 'simulator', label: '2s Hold', icon: Smartphone },
+            { id: 'file', label: 'JSON File', icon: FileJson }
+          ].map((tab) => {
+            const Icon = tab.icon;
+            const active = activeTab === tab.id;
+            return (
+              <button
+                key={tab.id}
+                onClick={() => setActiveTab(tab.id)}
+                className={`flex flex-col items-center justify-center py-1 text-[11px] font-medium transition cursor-pointer ${
+                  active ? 'text-indigo-400' : 'text-slate-400 hover:text-slate-200'
+                }`}
+              >
+                <Icon className="w-4 h-4 mb-1" />
+                <span>{tab.label}</span>
+              </button>
+            );
+          })}
+        </div>
+      </nav>
+    </div>
+  );
+}
