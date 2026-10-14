@@ -1,22 +1,78 @@
 import React, { useState, useEffect, useRef } from 'react';
 import {
-  Check, X, Plus, Trash2, Bell, Calendar, UserPlus,
+  Check, X, Plus, Trash2, Edit2, Bell, Calendar, UserPlus, UserMinus,
   Smartphone, Download, Upload, FileJson, FolderOpen,
   Save, Sun, CloudSun, Moon, Pill, CheckCircle2, Link2,
   Utensils, CalendarClock, Repeat
 } from 'lucide-react';
 
 // ==========================================
-// 1. DEFAULT JSON FILE STRUCTURE
+// 1. PERSISTENT FILE HANDLE MEMORY (REMEMBERS LAST FILE PATH)
 // ==========================================
-const SESSION_BUFFER_KEY = 'medtrack_file_buffer_v2';
+const SESSION_BUFFER_KEY = 'medtrack_file_buffer_v3';
 const DEFAULT_FILENAME = 'medtrack-data.json';
+const HANDLE_DB_NAME = 'MedTrackFileHandleDB';
+const HANDLE_STORE = 'handles';
 
+const openHandleDB = () => {
+  return new Promise((resolve, reject) => {
+    if (!('indexedDB' in window)) return reject(new Error('No IDB'));
+    const req = window.indexedDB.open(HANDLE_DB_NAME, 1);
+    req.onupgradeneeded = (e) => {
+      const db = e.target.result;
+      if (!db.objectStoreNames.contains(HANDLE_STORE)) {
+        db.createObjectStore(HANDLE_STORE);
+      }
+    };
+    req.onsuccess = () => resolve(req.result);
+    req.onerror = () => reject(req.error);
+  });
+};
+
+const rememberFileHandle = async (handle) => {
+  try {
+    const db = await openHandleDB();
+    return new Promise((resolve) => {
+      const tx = db.transaction(HANDLE_STORE, 'readwrite');
+      tx.objectStore(HANDLE_STORE).put(handle, 'lastFileHandle');
+      tx.oncomplete = () => resolve(true);
+      tx.onerror = () => resolve(false);
+    });
+  } catch (e) {
+    return false;
+  }
+};
+
+const getRememberedFileHandle = async () => {
+  try {
+    const db = await openHandleDB();
+    return new Promise((resolve) => {
+      const tx = db.transaction(HANDLE_STORE, 'readonly');
+      const req = tx.objectStore(HANDLE_STORE).get('lastFileHandle');
+      req.onsuccess = () => resolve(req.result || null);
+      req.onerror = () => resolve(null);
+    });
+  } catch (e) {
+    return null;
+  }
+};
+
+const clearRememberedFileHandle = async () => {
+  try {
+    const db = await openHandleDB();
+    const tx = db.transaction(HANDLE_STORE, 'readwrite');
+    tx.objectStore(HANDLE_STORE).delete('lastFileHandle');
+  } catch (e) {}
+};
+
+// ==========================================
+// 2. DEFAULT DATA & HELPERS
+// ==========================================
 const formatDateKey = (date) => {
   const y = date.getFullYear();
   const m = String(date.getMonth() + 1).padStart(2, '0');
   const d = String(date.getDate()).padStart(2, '0');
-  return `${y}-${m}-${d}`;
+  return y + '-' + m + '-' + d;
 };
 
 const TODAY_STR = formatDateKey(new Date());
@@ -36,9 +92,9 @@ const DEFAULT_FILE_DATA = {
       name: 'Vitamin D3',
       dosage: '60000 IU',
       slots: ['morning'],
-      foodTiming: 'after', // 'before' | 'after' | 'with' | 'any'
-      frequencyType: 'weekly', // 'daily' | 'weekly' | 'schedule'
-      weekDays: [0], // 0 = Sunday
+      foodTiming: 'after',
+      frequencyType: 'weekly',
+      weekDays: [0],
       intervalDays: 1,
       startDate: TODAY_STR,
       endDate: ''
@@ -74,21 +130,20 @@ const DEFAULT_FILE_DATA = {
       memberId: 'm3',
       name: 'Multivitamin Drops',
       dosage: '5ml',
-      slots: ['morning'],
+      slots: ['night'],
       foodTiming: 'after',
       frequencyType: 'schedule',
       weekDays: [0, 1, 2, 3, 4, 5, 6],
-      intervalDays: 2, // Every 2 days
+      intervalDays: 2,
       startDate: TODAY_STR,
       endDate: ''
     }
   ],
-  // Format: { "YYYY-MM-DD": { "medId_slot": "taken" | "skipped" } }
   logs: {},
   reminders: {
     morning: { time: '08:00', enabled: true },
     afternoon: { time: '13:30', enabled: true },
-    night: { time: '21:00', enabled: true }
+    night: { time: '20:30', enabled: true }
   }
 };
 
@@ -96,46 +151,39 @@ const loadInitialBuffer = () => {
   try {
     const cached = localStorage.getItem(SESSION_BUFFER_KEY);
     if (cached) return { ...DEFAULT_FILE_DATA, ...JSON.parse(cached) };
-  } catch (e) {
-    console.warn('Could not read session buffer:', e);
-  }
+  } catch (e) {}
   return DEFAULT_FILE_DATA;
 };
 
-// ==========================================
-// 2. CONSTANTS & SCHEDULE EVALUATOR
-// ==========================================
+// Note: 'night' id is preserved for backward compatibility, labeled "Evening"
 const SLOTS = [
   { id: 'morning', label: 'Morning', emoji: '☀️', icon: Sun, color: 'text-amber-400', bg: 'bg-amber-500/10', border: 'border-amber-500/30' },
   { id: 'afternoon', label: 'Afternoon', emoji: '🌤️', icon: CloudSun, color: 'text-sky-400', bg: 'bg-sky-500/10', border: 'border-sky-500/30' },
-  { id: 'night', label: 'Night', emoji: '🌙', icon: Moon, color: 'text-indigo-400', bg: 'bg-indigo-500/10', border: 'border-indigo-500/30' }
+  { id: 'night', label: 'Evening', emoji: '🌙', icon: Moon, color: 'text-indigo-400', bg: 'bg-indigo-500/10', border: 'border-indigo-500/30' }
 ];
 
 const FOOD_OPTIONS = [
-  { id: 'before', label: 'Before Food', short: 'Before Meal', emoji: '🍽️⬅️', badgeClass: 'bg-amber-500/15 text-amber-300 border-amber-500/30' },
-  { id: 'after', label: 'After Food', short: 'After Meal', emoji: '🍽️➡️', badgeClass: 'bg-emerald-500/15 text-emerald-300 border-emerald-500/30' },
-  { id: 'with', label: 'With Food', short: 'With Meal', emoji: '🥗', badgeClass: 'bg-sky-500/15 text-sky-300 border-sky-500/30' },
-  { id: 'any', label: 'Anytime', short: 'No Food Rule', emoji: '💧', badgeClass: 'bg-slate-800 text-slate-400 border-slate-700' }
+  { id: 'before', label: 'Before Food', emoji: '🍽️⬅️', badgeClass: 'bg-amber-500/15 text-amber-300 border-amber-500/30' },
+  { id: 'after', label: 'After Food', emoji: '🍽️➡️', badgeClass: 'bg-emerald-500/15 text-emerald-300 border-emerald-500/30' },
+  { id: 'with', label: 'With Food', emoji: '🥗', badgeClass: 'bg-sky-500/15 text-sky-300 border-sky-500/30' },
+  { id: 'any', label: 'Anytime', emoji: '💧', badgeClass: 'bg-slate-800 text-slate-400 border-slate-700' }
 ];
 
 const WEEKDAY_LABELS = [
-  { day: 1, short: 'M', name: 'Mon' },
-  { day: 2, short: 'T', name: 'Tue' },
-  { day: 3, short: 'W', name: 'Wed' },
-  { day: 4, short: 'T', name: 'Thu' },
-  { day: 5, short: 'F', name: 'Fri' },
-  { day: 6, short: 'S', name: 'Sat' },
-  { day: 0, short: 'S', name: 'Sun' }
+  { day: 1, name: 'Mon' },
+  { day: 2, name: 'Tue' },
+  { day: 3, name: 'Wed' },
+  { day: 4, name: 'Thu' },
+  { day: 5, name: 'Fri' },
+  { day: 6, name: 'Sat' },
+  { day: 0, name: 'Sun' }
 ];
 
-// Evaluates if a tablet is scheduled for a given "YYYY-MM-DD" date
 const isMedScheduledForDate = (med, dateKey) => {
-  const target = new Date(`${dateKey}T00:00:00`);
+  const target = new Date(dateKey + 'T00:00:00');
   const freq = med.frequencyType || 'daily';
 
-  if (freq === 'daily') {
-    return true;
-  }
+  if (freq === 'daily') return true;
 
   if (freq === 'weekly') {
     const days = Array.isArray(med.weekDays) ? med.weekDays : [0, 1, 2, 3, 4, 5, 6];
@@ -144,11 +192,11 @@ const isMedScheduledForDate = (med, dateKey) => {
 
   if (freq === 'schedule') {
     const startStr = med.startDate || TODAY_STR;
-    const start = new Date(`${startStr}T00:00:00`);
+    const start = new Date(startStr + 'T00:00:00');
     if (target < start) return false;
 
     if (med.endDate) {
-      const end = new Date(`${med.endDate}T00:00:00`);
+      const end = new Date(med.endDate + 'T00:00:00');
       if (target > end) return false;
     }
 
@@ -161,20 +209,19 @@ const isMedScheduledForDate = (med, dateKey) => {
   return true;
 };
 
-// Human-readable summary of a medication's schedule
 const getScheduleBadgeText = (med) => {
   const freq = med.frequencyType || 'daily';
   if (freq === 'daily') return 'Every Day';
   if (freq === 'weekly') {
     const dayNames = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
     const days = (med.weekDays || []).map((d) => dayNames[d]).join(', ');
-    return `Weekly (${days || 'None'})`;
+    return 'Weekly (' + (days || 'None') + ')';
   }
   if (freq === 'schedule') {
     const n = parseInt(med.intervalDays, 10) || 1;
-    const base = n === 1 ? 'Daily Course' : `Every ${n} Days`;
-    if (med.endDate) return `${base} (until ${med.endDate})`;
-    return `${base} (from ${med.startDate || TODAY_STR})`;
+    const base = n === 1 ? 'Daily Course' : 'Every ' + n + ' Days';
+    if (med.endDate) return base + ' (until ' + med.endDate + ')';
+    return base + ' (from ' + (med.startDate || TODAY_STR) + ')';
   }
   return 'Daily';
 };
@@ -204,11 +251,11 @@ const getCurrentWeekDays = () => {
 export default function App() {
   const [appData, setAppData] = useState(loadInitialBuffer);
   const [activeMemberId, setActiveMemberId] = useState(() => loadInitialBuffer().members[0]?.id || 'm1');
-  const [activeTab, setActiveTab] = useState('today'); // 'today' | 'weekly' | 'reminders' | 'simulator' | 'file'
+  const [activeTab, setActiveTab] = useState('today');
 
-  // Simple File Storage State
+  // File Storage State
   const [fileHandle, setFileHandle] = useState(null);
-  const [linkedFileName, setLinkedFileName] = useState(DEFAULT_FILENAME);
+  const [linkedFileName, setLinkedFileName] = useState(() => localStorage.getItem('medtrack_last_filename') || DEFAULT_FILENAME);
   const [unsavedChanges, setUnsavedChanges] = useState(false);
   const [toast, setToast] = useState(null);
   const fileInputRef = useRef(null);
@@ -218,15 +265,16 @@ export default function App() {
   const [newMemberName, setNewMemberName] = useState('');
   const [newMemberAvatar, setNewMemberAvatar] = useState('🧑🏽');
 
-  // Add Tablet Modal State (with Food Timing & Schedule Options)
-  const [showAddMed, setShowAddMed] = useState(false);
+  // Add / Edit Tablet Modal State
+  const [showMedModal, setShowMedModal] = useState(false);
+  const [editingMedId, setEditingMedId] = useState(null);
   const [newMedName, setNewMedName] = useState('');
   const [newMedDosage, setNewMedDosage] = useState('');
   const [newMedSlots, setNewMedSlots] = useState(['morning']);
-  const [newMedFood, setNewMedFood] = useState('after'); // 'before' | 'after' | 'with' | 'any'
-  const [newMedFreqType, setNewMedFreqType] = useState('daily'); // 'daily' | 'weekly' | 'schedule'
-  const [newMedWeekDays, setNewMedWeekDays] = useState([1, 3, 5]); // Default Mon, Wed, Fri when switching to weekly
-  const [newMedInterval, setNewMedInterval] = useState(2); // Every N days
+  const [newMedFood, setNewMedFood] = useState('after');
+  const [newMedFreqType, setNewMedFreqType] = useState('daily');
+  const [newMedWeekDays, setNewMedWeekDays] = useState([1, 3, 5]);
+  const [newMedInterval, setNewMedInterval] = useState(2);
   const [newMedStartDate, setNewMedStartDate] = useState(TODAY_STR);
   const [newMedEndDate, setNewMedEndDate] = useState('');
 
@@ -238,48 +286,80 @@ export default function App() {
 
   const todayKey = formatDateKey(new Date());
   const weekDays = getCurrentWeekDays();
-  const activeMember = appData.members.find((m) => m.id === activeMemberId) || appData.members[0];
+  const activeMember = appData.members.find((m) => m.id === activeMemberId) || appData.members[0] || null;
   const memberMeds = appData.medications.filter((m) => m.memberId === activeMember?.id);
 
   const showToast = (msg) => {
     setToast(msg);
-    setTimeout(() => setToast(null), 3200);
+    setTimeout(() => setToast(null), 3400);
   };
 
-  // Sync changes to session buffer and linked file
-  const updateDataAndSyncFile = async (updaterFn) => {
-    setAppData((prev) => {
-      const next = typeof updaterFn === 'function' ? updaterFn(prev) : updaterFn;
-      const updatedPayload = { ...next, updatedAt: new Date().toISOString() };
-
-      try {
-        localStorage.setItem(SESSION_BUFFER_KEY, JSON.stringify(updatedPayload));
-      } catch (e) {}
-
-      if (fileHandle) {
-        writeToLinkedFile(fileHandle, updatedPayload);
-      } else {
-        setUnsavedChanges(true);
+  // Restore last used FileSystemFileHandle on startup
+  useEffect(() => {
+    async function restoreLastFile() {
+      const savedHandle = await getRememberedFileHandle();
+      if (savedHandle) {
+        setFileHandle(savedHandle);
+        setLinkedFileName(savedHandle.name);
+        localStorage.setItem('medtrack_last_filename', savedHandle.name);
       }
+    }
+    restoreLastFile();
+  }, []);
 
-      return updatedPayload;
-    });
-  };
-
-  const writeToLinkedFile = async (handle, dataObj) => {
+  // Verify handle permissions and that the file still exists on disk
+  const verifyAndWriteToHandle = async (handle, dataObj) => {
     try {
+      if (handle.queryPermission) {
+        let perm = await handle.queryPermission({ mode: 'readwrite' });
+        if (perm !== 'granted') {
+          perm = await handle.requestPermission({ mode: 'readwrite' });
+        }
+        if (perm !== 'granted') return false;
+      }
+      // Check if file still exists on disk (throws NotFoundError if deleted/moved)
+      await handle.getFile();
+
       const writable = await handle.createWritable();
       await writable.write(JSON.stringify(dataObj, null, 2));
       await writable.close();
       setUnsavedChanges(false);
+      return true;
     } catch (err) {
-      console.error('Failed to auto-write to linked file:', err);
-      setUnsavedChanges(true);
+      // File was moved, deleted, or inaccessible
+      console.warn('Previous file not found or inaccessible, asking where to save again:', err);
+      setFileHandle(null);
+      await clearRememberedFileHandle();
+      return false;
     }
   };
 
-  const saveToFileDownload = async () => {
-    const jsonString = JSON.stringify(appData, null, 2);
+  // Prompt user where to save file and remember that path for future saves
+  const askWhereToSaveAndWrite = async (dataObj) => {
+    if ('showSaveFilePicker' in window) {
+      try {
+        const newHandle = await window.showSaveFilePicker({
+          suggestedName: linkedFileName || DEFAULT_FILENAME,
+          types: [{ description: 'JSON File', accept: { 'application/json': ['.json'] } }]
+        });
+        setFileHandle(newHandle);
+        setLinkedFileName(newHandle.name);
+        localStorage.setItem('medtrack_last_filename', newHandle.name);
+        await rememberFileHandle(newHandle);
+
+        const writable = await newHandle.createWritable();
+        await writable.write(JSON.stringify(dataObj, null, 2));
+        await writable.close();
+        setUnsavedChanges(false);
+        showToast('💾 Saved to ' + newHandle.name + ' (path remembered for next time!)');
+        return true;
+      } catch (err) {
+        if (err.name === 'AbortError') return false;
+      }
+    }
+
+    // Fallback for mobile browsers without File System Access API
+    const jsonString = JSON.stringify(dataObj, null, 2);
     const blob = new Blob([jsonString], { type: 'application/json' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
@@ -289,12 +369,77 @@ export default function App() {
     a.click();
     document.body.removeChild(a);
     URL.revokeObjectURL(url);
-
     setUnsavedChanges(false);
-    showToast(`💾 Saved values to ${linkedFileName}`);
+    showToast('💾 Downloaded ' + (linkedFileName || DEFAULT_FILENAME));
+    return true;
   };
 
-  const handleLoadFromFile = (e) => {
+  // Primary Save handler: saves to remembered path; if not found, asks where to save
+  const handleSmartSaveFile = async () => {
+    if (fileHandle) {
+      const ok = await verifyAndWriteToHandle(fileHandle, appData);
+      if (ok) {
+        showToast('💾 Saved directly to remembered file: ' + linkedFileName);
+        return;
+      }
+      showToast('⚠️ Last file not found on disk. Please choose where to save.');
+    }
+    await askWhereToSaveAndWrite(appData);
+  };
+
+  const updateDataAndSyncFile = (updaterFn) => {
+    setAppData((prev) => {
+      const next = typeof updaterFn === 'function' ? updaterFn(prev) : updaterFn;
+      const updatedPayload = { ...next, updatedAt: new Date().toISOString() };
+
+      try {
+        localStorage.setItem(SESSION_BUFFER_KEY, JSON.stringify(updatedPayload));
+      } catch (e) {}
+
+      if (fileHandle) {
+        verifyAndWriteToHandle(fileHandle, updatedPayload).then((ok) => {
+          if (!ok) setUnsavedChanges(true);
+        });
+      } else {
+        setUnsavedChanges(true);
+      }
+
+      return updatedPayload;
+    });
+  };
+
+  const handleOpenFile = async () => {
+    if ('showOpenFilePicker' in window) {
+      try {
+        const [handle] = await window.showOpenFilePicker({
+          types: [{ description: 'JSON File', accept: { 'application/json': ['.json'] } }],
+          multiple: false
+        });
+        const file = await handle.getFile();
+        const text = await file.text();
+        const parsed = JSON.parse(text);
+        if (parsed.members && parsed.medications && parsed.logs) {
+          setAppData(parsed);
+          localStorage.setItem(SESSION_BUFFER_KEY, JSON.stringify(parsed));
+          setActiveMemberId(parsed.members[0]?.id || 'm1');
+          setFileHandle(handle);
+          setLinkedFileName(handle.name);
+          localStorage.setItem('medtrack_last_filename', handle.name);
+          await rememberFileHandle(handle);
+          setUnsavedChanges(false);
+          showToast('📂 Opened & remembered ' + handle.name);
+        } else {
+          showToast('⚠️ Invalid MedTrack JSON file.');
+        }
+        return;
+      } catch (err) {
+        if (err.name === 'AbortError') return;
+      }
+    }
+    fileInputRef.current?.click();
+  };
+
+  const handleFallbackFileInput = (e) => {
     const file = e.target.files?.[0];
     if (!file) return;
     const reader = new FileReader();
@@ -306,8 +451,9 @@ export default function App() {
           localStorage.setItem(SESSION_BUFFER_KEY, JSON.stringify(parsed));
           setActiveMemberId(parsed.members[0]?.id || 'm1');
           setLinkedFileName(file.name);
+          localStorage.setItem('medtrack_last_filename', file.name);
           setUnsavedChanges(false);
-          showToast(`📂 Loaded ${file.name} successfully!`);
+          showToast('📂 Loaded ' + file.name + ' successfully!');
         } else {
           showToast('⚠️ Invalid MedTrack JSON file structure.');
         }
@@ -319,28 +465,6 @@ export default function App() {
     e.target.value = '';
   };
 
-  const linkDirectLocalFile = async () => {
-    if (!('showSaveFilePicker' in window)) {
-      showToast('Direct file linking is not supported on this browser. Use "Save File" button instead!');
-      return;
-    }
-    try {
-      const handle = await window.showSaveFilePicker({
-        suggestedName: DEFAULT_FILENAME,
-        types: [{ description: 'JSON File', accept: { 'application/json': ['.json'] } }]
-      });
-      setFileHandle(handle);
-      setLinkedFileName(handle.name);
-      await writeToLinkedFile(handle, appData);
-      showToast(`🔗 Linked to ${handle.name}! Every tap now saves directly to this file.`);
-    } catch (err) {
-      if (err.name !== 'AbortError') {
-        showToast('Could not link local file.');
-      }
-    }
-  };
-
-  // Handle 2-Second Hold OS Shortcut URL parameters
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
     const action = params.get('action');
@@ -352,12 +476,12 @@ export default function App() {
   }, []);
 
   // ==========================================
-  // 4. TABLET INTAKE ACTIONS
+  // 4. MEMBER & TABLET CRUD + EDITING
   // ==========================================
   const setMedStatus = (dateKey, medId, slotId, status) => {
     updateDataAndSyncFile((prev) => {
       const dayLogs = { ...(prev.logs[dateKey] || {}) };
-      const key = `${medId}_${slotId}`;
+      const key = medId + '_' + slotId;
       if (dayLogs[key] === status) {
         delete dayLogs[key];
       } else {
@@ -368,7 +492,7 @@ export default function App() {
   };
 
   const cycleMedStatus = (dateKey, medId, slotId) => {
-    const current = appData.logs[dateKey]?.[`${medId}_${slotId}`] || 'pending';
+    const current = appData.logs[dateKey]?.[medId + '_' + slotId] || 'pending';
     const next = current === 'pending' ? 'taken' : current === 'taken' ? 'skipped' : 'pending';
     setMedStatus(dateKey, medId, slotId, next === 'pending' ? current : next);
   };
@@ -377,26 +501,26 @@ export default function App() {
     const slotMeds = memberMeds.filter(
       (m) => m.slots.includes(slotId) && isMedScheduledForDate(m, todayKey)
     );
+    const slotInfo = SLOTS.find((s) => s.id === slotId);
     if (slotMeds.length === 0) {
-      showToast(`No ${slotId} tablets scheduled today for ${activeMember?.name}`);
+      showToast('No ' + (slotInfo?.label || slotId) + ' tablets scheduled today for ' + (activeMember?.name || 'member'));
       return;
     }
     updateDataAndSyncFile((prev) => {
       const dayLogs = { ...(prev.logs[todayKey] || {}) };
       slotMeds.forEach((m) => {
-        dayLogs[`${m.id}_${slotId}`] = status;
+        dayLogs[m.id + '_' + slotId] = status;
       });
       return { ...prev, logs: { ...prev.logs, [todayKey]: dayLogs } };
     });
-    const slotInfo = SLOTS.find((s) => s.id === slotId);
-    showToast(`${slotInfo?.emoji} Marked today's ${slotInfo?.label} tablets as ${status}!`);
+    showToast((slotInfo?.emoji || '') + ' Marked today\'s ' + (slotInfo?.label || '') + ' tablets as ' + status + '!');
   };
 
   const handleAddMember = (e) => {
     e.preventDefault();
     if (!newMemberName.trim()) return;
     const newMember = {
-      id: `m_${Date.now()}`,
+      id: 'm_' + Date.now(),
       name: newMemberName.trim(),
       avatar: newMemberAvatar
     };
@@ -404,19 +528,75 @@ export default function App() {
     setActiveMemberId(newMember.id);
     setNewMemberName('');
     setShowAddMember(false);
-    showToast(`Added ${newMember.name}`);
+    showToast('Added member: ' + newMember.name);
   };
 
-  const handleAddMedication = (e) => {
+  const handleDeleteMember = (memberId, memberName) => {
+    if (appData.members.length <= 1) {
+      showToast('⚠️ At least one member must remain in the tracker.');
+      return;
+    }
+    if (!window.confirm('Delete ' + memberName + ' and all their scheduled tablets?')) {
+      return;
+    }
+    updateDataAndSyncFile((prev) => {
+      const remainingMembers = prev.members.filter((m) => m.id !== memberId);
+      const remainingMeds = prev.medications.filter((med) => med.memberId !== memberId);
+      if (activeMemberId === memberId && remainingMembers.length > 0) {
+        setActiveMemberId(remainingMembers[0].id);
+      }
+      return {
+        ...prev,
+        members: remainingMembers,
+        medications: remainingMeds
+      };
+    });
+    showToast('🗑️ Deleted member: ' + memberName);
+  };
+
+  // Open Modal for Adding a New Tablet
+  const openAddTabletModal = () => {
+    setEditingMedId(null);
+    setNewMedName('');
+    setNewMedDosage('');
+    setNewMedSlots(['morning']);
+    setNewMedFood('after');
+    setNewMedFreqType('daily');
+    setNewMedWeekDays([1, 3, 5]);
+    setNewMedInterval(2);
+    setNewMedStartDate(TODAY_STR);
+    setNewMedEndDate('');
+    setShowMedModal(true);
+  };
+
+  // Open Modal for Editing an Existing Tablet
+  const openEditTabletModal = (med) => {
+    setEditingMedId(med.id);
+    setNewMedName(med.name || '');
+    setNewMedDosage(med.dosage || '');
+    setNewMedSlots(Array.isArray(med.slots) && med.slots.length > 0 ? med.slots : ['morning']);
+    setNewMedFood(med.foodTiming || 'after');
+    setNewMedFreqType(med.frequencyType || 'daily');
+    setNewMedWeekDays(Array.isArray(med.weekDays) ? med.weekDays : [1, 3, 5]);
+    setNewMedInterval(med.intervalDays || 2);
+    setNewMedStartDate(med.startDate || TODAY_STR);
+    setNewMedEndDate(med.endDate || '');
+    setShowMedModal(true);
+  };
+
+  const handleSaveMedication = (e) => {
     e.preventDefault();
-    if (!newMedName.trim() || newMedSlots.length === 0) return;
+    if (!newMedName.trim() || newMedSlots.length === 0) {
+      showToast('Please enter a tablet name and select at least one time slot.');
+      return;
+    }
     if (newMedFreqType === 'weekly' && newMedWeekDays.length === 0) {
       showToast('Please select at least one day of the week!');
       return;
     }
 
-    const med = {
-      id: `med_${Date.now()}`,
+    const medPayload = {
+      id: editingMedId ? editingMedId : 'med_' + Date.now(),
       memberId: activeMember.id,
       name: newMedName.trim(),
       dosage: newMedDosage.trim() || '1 Tablet',
@@ -429,15 +609,22 @@ export default function App() {
       endDate: newMedFreqType === 'schedule' ? newMedEndDate : ''
     };
 
-    updateDataAndSyncFile((prev) => ({ ...prev, medications: [...prev.medications, med] }));
-    setNewMedName('');
-    setNewMedDosage('');
-    setNewMedSlots(['morning']);
-    setNewMedFood('after');
-    setNewMedFreqType('daily');
-    setNewMedEndDate('');
-    setShowAddMed(false);
-    showToast(`Added ${med.name} (${getScheduleBadgeText(med)})`);
+    updateDataAndSyncFile((prev) => {
+      if (editingMedId) {
+        return {
+          ...prev,
+          medications: prev.medications.map((m) => (m.id === editingMedId ? medPayload : m))
+        };
+      }
+      return {
+        ...prev,
+        medications: [...prev.medications, medPayload]
+      };
+    });
+
+    setShowMedModal(false);
+    setEditingMedId(null);
+    showToast(editingMedId ? '✏️ Updated ' + medPayload.name : 'Added ' + medPayload.name);
   };
 
   const handleDeleteMedication = (medId) => {
@@ -477,7 +664,6 @@ export default function App() {
 
   return (
     <div className="min-h-screen bg-slate-950 text-slate-100 pb-24 font-sans">
-      {/* Toast Notification */}
       {toast && (
         <div className="fixed top-4 left-1/2 -translate-x-1/2 z-50 bg-indigo-600 text-white px-4 py-2.5 rounded-full shadow-xl flex items-center gap-2 text-xs sm:text-sm font-medium">
           <CheckCircle2 className="w-4 h-4 shrink-0" />
@@ -485,18 +671,17 @@ export default function App() {
         </div>
       )}
 
-      {/* Hidden File Input for Opening JSON File */}
       <input
         ref={fileInputRef}
         type="file"
         accept=".json,application/json"
-        onChange={handleLoadFromFile}
+        onChange={handleFallbackFileInput}
         className="hidden"
       />
 
-      {/* Top Header with Save File & Open File Buttons */}
+      {/* Top Header */}
       <header className="sticky top-0 z-30 bg-slate-900/95 backdrop-blur-md border-b border-slate-800 px-4 py-3">
-        <div className="max-w-4xl mx-auto flex flex-wrap items-center justify-between gap-2">
+        <div className="max-w-6xl mx-auto flex flex-wrap items-center justify-between gap-2">
           <div className="flex items-center gap-2.5">
             <div className="w-9 h-9 rounded-xl bg-gradient-to-br from-indigo-500 to-violet-600 flex items-center justify-center shadow-lg">
               <Pill className="w-5 h-5 text-white" />
@@ -505,29 +690,32 @@ export default function App() {
               <h1 className="font-bold text-base leading-tight flex items-center gap-2">
                 <span>MedTrack</span>
                 <span className="text-[11px] font-normal px-2 py-0.5 rounded-md bg-slate-800 text-slate-300 border border-slate-700">
-                  {fileHandle ? `🔗 Auto-Saving: ${linkedFileName}` : linkedFileName}
+                  {fileHandle ? '🔗 Path Remembered: ' + linkedFileName : '📄 ' + linkedFileName}
                 </span>
               </h1>
-              <p className="text-[11px] text-slate-400">Food Timing & Schedule-Aware Tracker</p>
+              <p className="text-[11px] text-slate-400">Family Tablet & Schedule Tracker</p>
             </div>
           </div>
 
           <div className="flex items-center gap-2">
             <button
-              onClick={saveToFileDownload}
-              className={`flex items-center gap-1.5 text-xs font-semibold px-3 py-2 rounded-xl transition cursor-pointer ${
-                unsavedChanges
+              onClick={handleSmartSaveFile}
+              className={
+                'flex items-center gap-1.5 text-xs font-semibold px-3 py-2 rounded-xl transition cursor-pointer ' +
+                (unsavedChanges
                   ? 'bg-emerald-500 hover:bg-emerald-400 text-slate-950 shadow-lg shadow-emerald-500/20'
-                  : 'bg-indigo-600 hover:bg-indigo-500 text-white'
-              }`}
+                  : 'bg-indigo-600 hover:bg-indigo-500 text-white')
+              }
+              title="Saves directly to last used file. If file was moved/deleted, asks where to save."
             >
               <Save className="w-3.5 h-3.5" />
               <span>{unsavedChanges ? 'Save File *' : 'Save File'}</span>
             </button>
 
             <button
-              onClick={() => fileInputRef.current?.click()}
+              onClick={handleOpenFile}
               className="flex items-center gap-1.5 text-xs bg-slate-800 hover:bg-slate-700 text-slate-200 px-3 py-2 rounded-xl border border-slate-700 transition cursor-pointer"
+              title="Open a saved medtrack-data.json file and remember its path"
             >
               <FolderOpen className="w-3.5 h-3.5 text-amber-400" />
               <span>Open File</span>
@@ -535,28 +723,48 @@ export default function App() {
           </div>
         </div>
 
-        {/* Family Member Selector */}
-        <div className="max-w-4xl mx-auto mt-3 flex items-center gap-2 overflow-x-auto pb-1 no-scrollbar">
+        {/* Family Member Strip with Delete Option */}
+        <div className="max-w-6xl mx-auto mt-3 flex items-center gap-2 overflow-x-auto pb-1 no-scrollbar">
           {appData.members.map((member) => {
             const active = member.id === activeMember?.id;
             return (
-              <button
+              <div
                 key={member.id}
-                onClick={() => setActiveMemberId(member.id)}
-                className={`flex items-center gap-2 px-3.5 py-1.5 rounded-full text-xs font-medium whitespace-nowrap transition ${
-                  active
+                className={
+                  'inline-flex items-center rounded-full text-xs font-medium whitespace-nowrap transition ' +
+                  (active
                     ? 'bg-indigo-600 text-white shadow-md shadow-indigo-600/30'
-                    : 'bg-slate-800 text-slate-300 hover:bg-slate-700'
-                }`}
+                    : 'bg-slate-800 text-slate-300 hover:bg-slate-700')
+                }
               >
-                <span>{member.avatar}</span>
-                <span>{member.name}</span>
-              </button>
+                <button
+                  onClick={() => setActiveMemberId(member.id)}
+                  className="flex items-center gap-2 pl-3.5 pr-2 py-1.5 cursor-pointer"
+                >
+                  <span>{member.avatar}</span>
+                  <span>{member.name}</span>
+                </button>
+                {appData.members.length > 1 && (
+                  <button
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      handleDeleteMember(member.id, member.name);
+                    }}
+                    title={'Delete ' + member.name}
+                    className={
+                      'pr-2.5 pl-1 py-1.5 rounded-r-full transition cursor-pointer ' +
+                      (active ? 'text-indigo-200 hover:text-white' : 'text-slate-500 hover:text-rose-400')
+                    }
+                  >
+                    <X className="w-3.5 h-3.5" />
+                  </button>
+                )}
+              </div>
             );
           })}
           <button
             onClick={() => setShowAddMember(true)}
-            className="flex items-center gap-1 px-3 py-1.5 rounded-full text-xs font-medium bg-slate-800/60 hover:bg-slate-800 text-indigo-400 border border-dashed border-slate-700 whitespace-nowrap"
+            className="flex items-center gap-1 px-3 py-1.5 rounded-full text-xs font-medium bg-slate-800/60 hover:bg-slate-800 text-indigo-400 border border-dashed border-slate-700 whitespace-nowrap cursor-pointer"
           >
             <UserPlus className="w-3.5 h-3.5" />
             <span>+ Member</span>
@@ -565,165 +773,200 @@ export default function App() {
       </header>
 
       {/* Main Content */}
-      <main className="max-w-4xl mx-auto px-4 pt-5 space-y-6">
+      <main className="max-w-6xl mx-auto px-4 pt-5 space-y-6">
         {/* ==========================================
-            TAB 1: TODAY'S TABLETS
+            TAB 1: TODAY'S TABLETS (SIDE-BY-SIDE 3-COLUMN LAYOUT)
            ========================================== */}
-        {activeTab === 'today' && (
+        {activeTab === 'today' && activeMember && (
           <div className="space-y-5">
-            <div className="flex items-center justify-between bg-slate-900 border border-slate-800 rounded-2xl p-4">
+            <div className="flex flex-wrap items-center justify-between gap-3 bg-slate-900 border border-slate-800 rounded-2xl p-4">
               <div>
                 <p className="text-xs uppercase tracking-wider text-indigo-400 font-semibold">
                   Today • {new Date().toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' })}
                 </p>
                 <h2 className="text-lg font-bold mt-0.5">
-                  {activeMember?.avatar} {activeMember?.name}’s Tablets
+                  {activeMember.avatar} {activeMember.name}’s Tablets
                 </h2>
               </div>
-              <button
-                onClick={() => setShowAddMed(true)}
-                className="flex items-center gap-1.5 bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold px-3.5 py-2.5 rounded-xl transition cursor-pointer"
-              >
-                <Plus className="w-4 h-4" />
-                <span>Add Tablet</span>
-              </button>
+
+              <div className="flex items-center gap-2">
+                {appData.members.length > 1 && (
+                  <button
+                    onClick={() => handleDeleteMember(activeMember.id, activeMember.name)}
+                    className="flex items-center gap-1.5 bg-slate-800 hover:bg-rose-500/20 text-slate-300 hover:text-rose-300 border border-slate-700 text-xs font-medium px-3 py-2.5 rounded-xl transition cursor-pointer"
+                    title="Delete current member"
+                  >
+                    <UserMinus className="w-4 h-4" />
+                    <span className="hidden sm:inline">Delete Member</span>
+                  </button>
+                )}
+                <button
+                  onClick={openAddTabletModal}
+                  className="flex items-center gap-1.5 bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold px-3.5 py-2.5 rounded-xl transition cursor-pointer"
+                >
+                  <Plus className="w-4 h-4" />
+                  <span>Add Tablet</span>
+                </button>
+              </div>
             </div>
 
-            {SLOTS.map((slot) => {
-              // Filter by slot AND whether it is scheduled for today
-              const slotMeds = memberMeds.filter(
-                (m) => m.slots.includes(slot.id) && isMedScheduledForDate(m, todayKey)
-              );
-              const offTodayCount = memberMeds.filter(
-                (m) => m.slots.includes(slot.id) && !isMedScheduledForDate(m, todayKey)
-              ).length;
+            {/* Side-by-Side Morning, Afternoon, and Evening Grid */}
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-4 items-start">
+              {SLOTS.map((slot) => {
+                const slotMeds = memberMeds.filter(
+                  (m) => m.slots.includes(slot.id) && isMedScheduledForDate(m, todayKey)
+                );
+                const offTodayCount = memberMeds.filter(
+                  (m) => m.slots.includes(slot.id) && !isMedScheduledForDate(m, todayKey)
+                ).length;
 
-              return (
-                <div key={slot.id} className={`rounded-2xl border ${slot.border} bg-slate-900/70 overflow-hidden`}>
-                  <div className={`px-4 py-3 ${slot.bg} flex items-center justify-between border-b border-slate-800/80`}>
-                    <div className="flex items-center gap-2.5">
-                      <span className="text-xl">{slot.emoji}</span>
-                      <div>
-                        <h3 className={`font-bold text-sm ${slot.color}`}>{slot.label}</h3>
-                        <p className="text-[11px] text-slate-400">
-                          Reminder: {appData.reminders[slot.id]?.time}
-                          {offTodayCount > 0 && ` • (${offTodayCount} non-today scheduled med hidden)`}
-                        </p>
+                return (
+                  <div key={slot.id} className={'rounded-2xl border bg-slate-900/70 overflow-hidden flex flex-col ' + slot.border}>
+                    {/* Column Header */}
+                    <div className={'px-4 py-3 flex items-center justify-between border-b border-slate-800/80 ' + slot.bg}>
+                      <div className="flex items-center gap-2">
+                        <span className="text-xl">{slot.emoji}</span>
+                        <div>
+                          <h3 className={'font-bold text-sm ' + slot.color}>{slot.label}</h3>
+                          <p className="text-[11px] text-slate-400">
+                            ⏰ {appData.reminders[slot.id]?.time}
+                            {offTodayCount > 0 ? ' • (' + offTodayCount + ' off today)' : ''}
+                          </p>
+                        </div>
                       </div>
+                      {slotMeds.length > 0 && (
+                        <button
+                          onClick={() => markSlotBatch(slot.id, 'taken')}
+                          className="text-[11px] bg-slate-900 hover:bg-slate-800 text-slate-200 px-2.5 py-1 rounded-lg border border-slate-700 font-medium transition cursor-pointer"
+                        >
+                          ✓ Mark All
+                        </button>
+                      )}
                     </div>
-                    {slotMeds.length > 0 && (
-                      <button
-                        onClick={() => markSlotBatch(slot.id, 'taken')}
-                        className="text-xs bg-slate-900 hover:bg-slate-800 text-slate-200 px-3 py-1.5 rounded-lg border border-slate-700 font-medium transition cursor-pointer"
-                      >
-                        ✓ Mark All {slot.label}
-                      </button>
-                    )}
-                  </div>
 
-                  <div className="divide-y divide-slate-800/60">
-                    {slotMeds.length === 0 ? (
-                      <p className="text-xs text-slate-500 py-5 text-center">
-                        No {slot.label.toLowerCase()} tablets due today for {activeMember?.name}.
-                      </p>
-                    ) : (
-                      slotMeds.map((med) => {
-                        const status = appData.logs[todayKey]?.[`${med.id}_${slot.id}`] || 'pending';
-                        const foodMeta = FOOD_OPTIONS.find((f) => f.id === (med.foodTiming || 'after')) || FOOD_OPTIONS[1];
+                    {/* Tablet Cards Inside Slot Column */}
+                    <div className="divide-y divide-slate-800/60">
+                      {slotMeds.length === 0 ? (
+                        <p className="text-xs text-slate-500 py-8 px-4 text-center">
+                          No {slot.label.toLowerCase()} tablets due today.
+                        </p>
+                      ) : (
+                        slotMeds.map((med) => {
+                          const status = appData.logs[todayKey]?.[med.id + '_' + slot.id] || 'pending';
+                          const foodMeta = FOOD_OPTIONS.find((f) => f.id === (med.foodTiming || 'after')) || FOOD_OPTIONS[1];
 
-                        return (
-                          <div key={med.id} className="p-4 flex flex-wrap sm:flex-nowrap items-center justify-between gap-3">
-                            <div className="space-y-1">
-                              <div className="font-semibold text-sm flex flex-wrap items-center gap-2">
-                                <span>{med.name}</span>
-                                <span className="text-xs px-2 py-0.5 rounded-full bg-slate-800 text-slate-300 font-normal">
-                                  {med.dosage}
-                                </span>
-                                {/* Before / After Food Badge */}
-                                <span className={`text-[11px] px-2 py-0.5 rounded-full border font-medium ${foodMeta.badgeClass}`}>
-                                  {foodMeta.emoji} {foodMeta.label}
-                                </span>
+                          return (
+                            <div key={med.id} className="p-3.5 space-y-2.5">
+                              <div className="flex items-start justify-between gap-2">
+                                <div>
+                                  <div className="font-semibold text-sm text-white flex flex-wrap items-center gap-1.5">
+                                    <span>{med.name}</span>
+                                    <span className="text-[11px] px-2 py-0.5 rounded-full bg-slate-800 text-slate-300 font-normal">
+                                      {med.dosage}
+                                    </span>
+                                  </div>
+                                  <div className="flex flex-wrap items-center gap-1.5 mt-1.5">
+                                    <span className={'text-[10px] px-2 py-0.5 rounded-full border font-medium ' + foodMeta.badgeClass}>
+                                      {foodMeta.emoji} {foodMeta.label}
+                                    </span>
+                                    <span className="text-[10px] px-2 py-0.5 rounded-full bg-slate-800/90 text-slate-300 inline-flex items-center gap-1">
+                                      <Repeat className="w-2.5 h-2.5 text-indigo-400" />
+                                      {getScheduleBadgeText(med)}
+                                    </span>
+                                  </div>
+                                </div>
+
+                                {/* Edit & Delete Action Icons */}
+                                <div className="flex items-center gap-1 shrink-0">
+                                  <button
+                                    onClick={() => openEditTabletModal(med)}
+                                    className="p-1.5 rounded-lg text-slate-400 hover:text-indigo-300 hover:bg-slate-800 transition cursor-pointer"
+                                    title="Edit Tablet Details"
+                                  >
+                                    <Edit2 className="w-3.5 h-3.5" />
+                                  </button>
+                                  <button
+                                    onClick={() => handleDeleteMedication(med.id)}
+                                    className="p-1.5 rounded-lg text-slate-500 hover:text-rose-400 hover:bg-slate-800 transition cursor-pointer"
+                                    title="Delete Tablet"
+                                  >
+                                    <Trash2 className="w-3.5 h-3.5" />
+                                  </button>
+                                </div>
                               </div>
 
-                              <div className="flex flex-wrap items-center gap-3 text-xs text-slate-400">
-                                <span className="inline-flex items-center gap-1 text-slate-300">
-                                  <Repeat className="w-3 h-3 text-indigo-400" />
-                                  {getScheduleBadgeText(med)}
-                                </span>
-                                <span>•</span>
-                                <span>
+                              {/* Take / Skip Action Bar */}
+                              <div className="flex items-center justify-between pt-1">
+                                <span className="text-[11px] text-slate-400">
                                   Status:{' '}
-                                  <span
+                                  <strong
                                     className={
                                       status === 'taken'
-                                        ? 'text-emerald-400 font-semibold'
+                                        ? 'text-emerald-400'
                                         : status === 'skipped'
-                                        ? 'text-rose-400 font-semibold'
+                                        ? 'text-rose-400'
                                         : 'text-amber-400'
                                     }
                                   >
                                     {status.toUpperCase()}
-                                  </span>
+                                  </strong>
                                 </span>
+
+                                <div className="flex items-center gap-1.5">
+                                  <button
+                                    onClick={() => setMedStatus(todayKey, med.id, slot.id, 'taken')}
+                                    className={
+                                      'px-3 py-1 rounded-lg text-xs font-semibold flex items-center gap-1 transition cursor-pointer ' +
+                                      (status === 'taken'
+                                        ? 'bg-emerald-500 text-slate-950'
+                                        : 'bg-slate-800 text-slate-200 hover:bg-slate-700')
+                                    }
+                                  >
+                                    <Check className="w-3.5 h-3.5" />
+                                    <span>Take</span>
+                                  </button>
+                                  <button
+                                    onClick={() => setMedStatus(todayKey, med.id, slot.id, 'skipped')}
+                                    className={
+                                      'p-1 rounded-lg text-xs transition cursor-pointer ' +
+                                      (status === 'skipped'
+                                        ? 'bg-rose-500 text-white'
+                                        : 'bg-slate-800 text-slate-400 hover:bg-slate-700')
+                                    }
+                                    title="Skip"
+                                  >
+                                    <X className="w-4 h-4" />
+                                  </button>
+                                </div>
                               </div>
                             </div>
-
-                            <div className="flex items-center gap-2 ml-auto">
-                              <button
-                                onClick={() => setMedStatus(todayKey, med.id, slot.id, 'taken')}
-                                className={`px-3 py-1.5 rounded-xl text-xs font-semibold flex items-center gap-1 transition cursor-pointer ${
-                                  status === 'taken'
-                                    ? 'bg-emerald-500 text-slate-950'
-                                    : 'bg-slate-800 text-slate-300 hover:bg-slate-700'
-                                }`}
-                              >
-                                <Check className="w-3.5 h-3.5" />
-                                Take
-                              </button>
-                              <button
-                                onClick={() => setMedStatus(todayKey, med.id, slot.id, 'skipped')}
-                                className={`p-1.5 rounded-xl text-xs transition cursor-pointer ${
-                                  status === 'skipped'
-                                    ? 'bg-rose-500 text-white'
-                                    : 'bg-slate-800 text-slate-400 hover:bg-slate-700'
-                                }`}
-                              >
-                                <X className="w-4 h-4" />
-                              </button>
-                              <button
-                                onClick={() => handleDeleteMedication(med.id)}
-                                className="p-1.5 rounded-xl text-slate-500 hover:text-rose-400 hover:bg-slate-800 transition cursor-pointer"
-                              >
-                                <Trash2 className="w-4 h-4" />
-                              </button>
-                            </div>
-                          </div>
-                        );
-                      })
-                    )}
+                          );
+                        })
+                      )}
+                    </div>
                   </div>
-                </div>
-              );
-            })}
+                );
+              })}
+            </div>
           </div>
         )}
 
         {/* ==========================================
-            TAB 2: WEEKLY VIEW (SCHEDULE AWARE)
+            TAB 2: WEEKLY VIEW (WITH EDIT TABLET OPTION)
            ========================================== */}
-        {activeTab === 'weekly' && (
+        {activeTab === 'weekly' && activeMember && (
           <div className="bg-slate-900 border border-slate-800 rounded-2xl p-4 space-y-4">
             <div className="flex flex-wrap items-center justify-between gap-2">
               <div>
                 <h2 className="text-base font-bold">
-                  Weekly Schedule View — {activeMember?.avatar} {activeMember?.name}
+                  Weekly Schedule View — {activeMember.avatar} {activeMember.name}
                 </h2>
                 <p className="text-xs text-slate-400">
-                  Tap any active ☀️, 🌤️, or 🌙 slot to mark Taken (✓) or Skipped (✕). Non-scheduled days show <code>—</code>.
+                  Tap any active ☀️, 🌤️, or 🌙 slot to mark Taken (✓) or Skipped (✕). Click ✏️ to edit a tablet.
                 </p>
               </div>
               <button
-                onClick={() => setShowAddMed(true)}
+                onClick={openAddTabletModal}
                 className="flex items-center gap-1.5 bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold px-3 py-2 rounded-xl transition cursor-pointer"
               >
                 <Plus className="w-3.5 h-3.5" />
@@ -732,16 +975,14 @@ export default function App() {
             </div>
 
             <div className="overflow-x-auto">
-              <table className="w-full text-left border-collapse min-w-[680px]">
+              <table className="w-full text-left border-collapse min-w-[700px]">
                 <thead>
                   <tr className="border-b border-slate-800 text-xs text-slate-400">
                     <th className="py-3 pr-3 font-semibold">Tablet / Food / Frequency</th>
                     {weekDays.map((d) => (
                       <th
                         key={d.key}
-                        className={`py-2 px-2 text-center rounded-t-lg ${
-                          d.isToday ? 'bg-indigo-500/10 text-indigo-300 font-bold' : ''
-                        }`}
+                        className={'py-2 px-2 text-center rounded-t-lg ' + (d.isToday ? 'bg-indigo-500/10 text-indigo-300 font-bold' : '')}
                       >
                         <div>{d.shortDay}</div>
                         <div className="text-[11px] opacity-80">{d.dayNum}</div>
@@ -755,12 +996,19 @@ export default function App() {
                     return (
                       <tr key={med.id}>
                         <td className="py-3 pr-3 font-medium space-y-1">
-                          <div className="text-slate-100 flex items-center gap-1.5">
+                          <div className="text-slate-100 flex items-center gap-2">
                             <span>{med.name}</span>
                             <span className="text-[10px] text-slate-400 font-normal">({med.dosage})</span>
+                            <button
+                              onClick={() => openEditTabletModal(med)}
+                              className="text-slate-400 hover:text-indigo-400 p-1 rounded cursor-pointer"
+                              title="Edit Tablet"
+                            >
+                              <Edit2 className="w-3 h-3" />
+                            </button>
                           </div>
                           <div className="flex flex-wrap items-center gap-1.5">
-                            <span className={`text-[10px] px-1.5 py-0.5 rounded border ${foodMeta.badgeClass}`}>
+                            <span className={'text-[10px] px-1.5 py-0.5 rounded border ' + foodMeta.badgeClass}>
                               {foodMeta.label}
                             </span>
                             <span className="text-[10px] px-1.5 py-0.5 rounded bg-slate-800 text-slate-300">
@@ -771,30 +1019,26 @@ export default function App() {
                         {weekDays.map((d) => {
                           const scheduled = isMedScheduledForDate(med, d.key);
                           return (
-                            <td key={d.key} className={`py-2.5 px-1.5 text-center ${d.isToday ? 'bg-indigo-500/5' : ''}`}>
+                            <td key={d.key} className={'py-2.5 px-1.5 text-center ' + (d.isToday ? 'bg-indigo-500/5' : '')}>
                               {!scheduled ? (
-                                <span
-                                  className="inline-block text-[11px] text-slate-600 select-none"
-                                  title="Not scheduled for this day"
-                                >
-                                  —
-                                </span>
+                                <span className="inline-block text-[11px] text-slate-600 select-none">—</span>
                               ) : (
                                 <div className="flex items-center justify-center gap-1">
                                   {med.slots.map((slotId) => {
                                     const slotMeta = SLOTS.find((s) => s.id === slotId);
-                                    const st = appData.logs[d.key]?.[`${med.id}_${slotId}`] || 'pending';
+                                    const st = appData.logs[d.key]?.[med.id + '_' + slotId] || 'pending';
                                     return (
                                       <button
                                         key={slotId}
                                         onClick={() => cycleMedStatus(d.key, med.id, slotId)}
-                                        className={`w-7 h-7 rounded-lg flex flex-col items-center justify-center text-[10px] border transition cursor-pointer ${
-                                          st === 'taken'
+                                        className={
+                                          'w-7 h-7 rounded-lg flex flex-col items-center justify-center text-[10px] border transition cursor-pointer ' +
+                                          (st === 'taken'
                                             ? 'bg-emerald-500/20 border-emerald-500 text-emerald-300 font-bold'
                                             : st === 'skipped'
                                             ? 'bg-rose-500/20 border-rose-500 text-rose-300 font-bold'
-                                            : 'bg-slate-800/80 border-slate-700 text-slate-400'
-                                        }`}
+                                            : 'bg-slate-800/80 border-slate-700 text-slate-400')
+                                        }
                                       >
                                         <span>{slotMeta?.emoji}</span>
                                         <span className="leading-none">
@@ -824,7 +1068,7 @@ export default function App() {
           <div className="bg-slate-900 border border-slate-800 rounded-2xl p-4 space-y-4">
             <h2 className="text-base font-bold flex items-center gap-2">
               <Bell className="w-4 h-4 text-indigo-400" />
-              <span>Morning / Afternoon / Night Reminders</span>
+              <span>Morning / Afternoon / Evening Reminders</span>
             </h2>
             <div className="grid sm:grid-cols-3 gap-4">
               {SLOTS.map((slot) => {
@@ -833,7 +1077,7 @@ export default function App() {
                   (m) => m.slots.includes(slot.id) && isMedScheduledForDate(m, todayKey)
                 );
                 return (
-                  <div key={slot.id} className={`p-4 rounded-xl border ${slot.border} bg-slate-950/60 space-y-3`}>
+                  <div key={slot.id} className={'p-4 rounded-xl border bg-slate-950/60 space-y-3 ' + slot.border}>
                     <div className="flex items-center justify-between">
                       <span className="text-lg font-bold flex items-center gap-2">
                         <span>{slot.emoji}</span>
@@ -885,7 +1129,7 @@ export default function App() {
                     </div>
                     <button
                       onClick={() =>
-                        showToast(`${slot.emoji} Reminder: Take ${activeMember?.name}'s ${slot.label} tablets (check Before/After food)!`)
+                        showToast(slot.emoji + ' Reminder: Take ' + (activeMember?.name || '') + '\'s ' + slot.label + ' tablets!')
                       }
                       className="w-full text-xs bg-slate-800 hover:bg-slate-700 text-slate-200 py-2 rounded-lg border border-slate-700 transition cursor-pointer"
                     >
@@ -938,16 +1182,17 @@ export default function App() {
                   onMouseLeave={endHold}
                   onTouchStart={startHold}
                   onTouchEnd={endHold}
-                  className={`w-16 h-16 rounded-2xl bg-gradient-to-br from-indigo-500 to-violet-600 flex items-center justify-center shadow-xl transition-transform ${
-                    isHoldingIcon ? 'scale-90 ring-4 ring-indigo-400/50' : ''
-                  }`}
+                  className={
+                    'w-16 h-16 rounded-2xl bg-gradient-to-br from-indigo-500 to-violet-600 flex items-center justify-center shadow-xl transition-transform ' +
+                    (isHoldingIcon ? 'scale-90 ring-4 ring-indigo-400/50' : '')
+                  }
                 >
                   <Pill className="w-8 h-8 text-white" />
                 </button>
                 <span className="text-xs font-medium text-slate-200">MedTrack</span>
                 {isHoldingIcon && (
                   <div className="w-24 h-1.5 bg-slate-800 rounded-full overflow-hidden">
-                    <div className="h-full bg-indigo-400" style={{ width: `${holdProgress}%` }} />
+                    <div className="h-full bg-indigo-400" style={{ width: holdProgress + '%' }} />
                   </div>
                 )}
               </div>
@@ -964,36 +1209,36 @@ export default function App() {
               <div>
                 <h2 className="text-base font-bold flex items-center gap-2">
                   <FileJson className="w-5 h-5 text-indigo-400" />
-                  <span>Simple File Storage ({linkedFileName})</span>
+                  <span>Remembered File Storage ({linkedFileName})</span>
                 </h2>
                 <p className="text-xs text-slate-400 mt-0.5">
-                  Save all members, food timings, schedules, and daily intake marks into a single portable <code>.json</code> file.
+                  MedTrack remembers the last file path you saved to. If that file is moved or deleted, it automatically asks where to save again.
                 </p>
               </div>
 
               <div className="flex flex-wrap gap-2">
                 <button
-                  onClick={saveToFileDownload}
+                  onClick={handleSmartSaveFile}
                   className="flex items-center gap-1.5 bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold px-3.5 py-2 rounded-xl transition cursor-pointer"
                 >
-                  <Download className="w-4 h-4" />
-                  <span>Download .JSON File</span>
+                  <Save className="w-4 h-4" />
+                  <span>Save to Same File</span>
                 </button>
 
                 <button
-                  onClick={() => fileInputRef.current?.click()}
-                  className="flex items-center gap-1.5 bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-semibold px-3.5 py-2 rounded-xl border border-slate-700 transition cursor-pointer"
-                >
-                  <Upload className="w-4 h-4" />
-                  <span>Load .JSON File</span>
-                </button>
-
-                <button
-                  onClick={linkDirectLocalFile}
+                  onClick={() => askWhereToSaveAndWrite(appData)}
                   className="flex items-center gap-1.5 bg-emerald-600/20 hover:bg-emerald-600/30 text-emerald-300 text-xs font-semibold px-3.5 py-2 rounded-xl border border-emerald-500/30 transition cursor-pointer"
                 >
                   <Link2 className="w-4 h-4" />
-                  <span>{fileHandle ? 'Linked to Local File ✓' : 'Auto-Sync Local File'}</span>
+                  <span>Save As (Change File Path)</span>
+                </button>
+
+                <button
+                  onClick={handleOpenFile}
+                  className="flex items-center gap-1.5 bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-semibold px-3.5 py-2 rounded-xl border border-slate-700 transition cursor-pointer"
+                >
+                  <Upload className="w-4 h-4" />
+                  <span>Open .JSON File</span>
                 </button>
               </div>
             </div>
@@ -1032,9 +1277,10 @@ export default function App() {
                   type="button"
                   key={av}
                   onClick={() => setNewMemberAvatar(av)}
-                  className={`text-xl p-2 rounded-xl border ${
-                    newMemberAvatar === av ? 'border-indigo-500 bg-indigo-500/20' : 'border-slate-800 bg-slate-950'
-                  }`}
+                  className={
+                    'text-xl p-2 rounded-xl border cursor-pointer ' +
+                    (newMemberAvatar === av ? 'border-indigo-500 bg-indigo-500/20' : 'border-slate-800 bg-slate-950')
+                  }
                 >
                   {av}
                 </button>
@@ -1044,11 +1290,11 @@ export default function App() {
               <button
                 type="button"
                 onClick={() => setShowAddMember(false)}
-                className="px-4 py-2 rounded-xl text-xs bg-slate-800 text-slate-300"
+                className="px-4 py-2 rounded-xl text-xs bg-slate-800 text-slate-300 cursor-pointer"
               >
                 Cancel
               </button>
-              <button type="submit" className="px-4 py-2 rounded-xl text-xs bg-indigo-600 text-white font-semibold">
+              <button type="submit" className="px-4 py-2 rounded-xl text-xs bg-indigo-600 text-white font-semibold cursor-pointer">
                 Add Member
               </button>
             </div>
@@ -1056,29 +1302,31 @@ export default function App() {
         </div>
       )}
 
-      {/* ==========================================
-          ADD TABLET MODAL (WITH FOOD & SCHEDULE OPTIONS)
-         ========================================== */}
-      {showAddMed && (
+      {/* Add OR Edit Tablet Modal */}
+      {showMedModal && (
         <div className="fixed inset-0 z-50 bg-black/80 flex items-center justify-center p-4 overflow-y-auto">
           <form
-            onSubmit={handleAddMedication}
+            onSubmit={handleSaveMedication}
             className="bg-slate-900 border border-slate-800 rounded-2xl p-5 w-full max-w-md space-y-4 my-auto"
           >
             <div className="flex items-center justify-between border-b border-slate-800 pb-3">
               <h3 className="font-bold text-base">
-                Add Tablet for {activeMember?.avatar} {activeMember?.name}
+                {editingMedId
+                  ? '✏️ Edit Tablet Details'
+                  : 'Add Tablet for ' + (activeMember?.avatar || '') + ' ' + (activeMember?.name || '')}
               </h3>
               <button
                 type="button"
-                onClick={() => setShowAddMed(false)}
-                className="text-slate-400 hover:text-white text-sm"
+                onClick={() => {
+                  setShowMedModal(false);
+                  setEditingMedId(null);
+                }}
+                className="text-slate-400 hover:text-white text-sm cursor-pointer"
               >
                 ✕
               </button>
             </div>
 
-            {/* Name & Dosage */}
             <div className="grid grid-cols-3 gap-2.5">
               <input
                 type="text"
@@ -1097,7 +1345,6 @@ export default function App() {
               />
             </div>
 
-            {/* 1. Food Timing Selector (Before / After / With Food) */}
             <div className="space-y-1.5">
               <label className="text-xs font-semibold text-slate-300 flex items-center gap-1.5">
                 <Utensils className="w-3.5 h-3.5 text-amber-400" />
@@ -1111,11 +1358,12 @@ export default function App() {
                       type="button"
                       key={food.id}
                       onClick={() => setNewMedFood(food.id)}
-                      className={`py-2 px-2 rounded-xl text-xs font-medium border flex flex-col items-center justify-center gap-0.5 transition cursor-pointer ${
-                        selected
+                      className={
+                        'py-2 px-2 rounded-xl text-xs font-medium border flex flex-col items-center justify-center gap-0.5 transition cursor-pointer ' +
+                        (selected
                           ? 'border-indigo-500 bg-indigo-500/20 text-white'
-                          : 'border-slate-800 bg-slate-950 text-slate-400 hover:border-slate-700'
-                      }`}
+                          : 'border-slate-800 bg-slate-950 text-slate-400 hover:border-slate-700')
+                      }
                     >
                       <span className="text-sm">{food.emoji}</span>
                       <span>{food.label}</span>
@@ -1125,9 +1373,8 @@ export default function App() {
               </div>
             </div>
 
-            {/* 2. Time of Day Slots (Morning / Afternoon / Night) */}
             <div className="space-y-1.5">
-              <label className="text-xs font-semibold text-slate-300">Time of Day</label>
+              <label className="text-xs font-semibold text-slate-300">Time of Day (Morning / Afternoon / Evening)</label>
               <div className="grid grid-cols-3 gap-2">
                 {SLOTS.map((s) => {
                   const selected = newMedSlots.includes(s.id);
@@ -1140,11 +1387,12 @@ export default function App() {
                           prev.includes(s.id) ? prev.filter((x) => x !== s.id) : [...prev, s.id]
                         )
                       }
-                      className={`py-2 px-2 rounded-xl text-xs font-medium border flex items-center justify-center gap-1.5 cursor-pointer ${
-                        selected
+                      className={
+                        'py-2 px-2 rounded-xl text-xs font-medium border flex items-center justify-center gap-1.5 cursor-pointer ' +
+                        (selected
                           ? 'border-indigo-500 bg-indigo-500/20 text-white'
-                          : 'border-slate-800 bg-slate-950 text-slate-400'
-                      }`}
+                          : 'border-slate-800 bg-slate-950 text-slate-400')
+                      }
                     >
                       <span>{s.emoji}</span>
                       <span>{s.label}</span>
@@ -1154,7 +1402,6 @@ export default function App() {
               </div>
             </div>
 
-            {/* 3. Frequency / Schedule Selector (Daily, Weekly, Schedule Based) */}
             <div className="space-y-2">
               <label className="text-xs font-semibold text-slate-300 flex items-center gap-1.5">
                 <CalendarClock className="w-3.5 h-3.5 text-indigo-400" />
@@ -1170,18 +1417,18 @@ export default function App() {
                     type="button"
                     key={tab.id}
                     onClick={() => setNewMedFreqType(tab.id)}
-                    className={`py-2 px-2 rounded-xl text-xs font-semibold border transition cursor-pointer ${
-                      newMedFreqType === tab.id
+                    className={
+                      'py-2 px-2 rounded-xl text-xs font-semibold border transition cursor-pointer ' +
+                      (newMedFreqType === tab.id
                         ? 'border-emerald-500 bg-emerald-500/20 text-emerald-300'
-                        : 'border-slate-800 bg-slate-950 text-slate-400'
-                    }`}
+                        : 'border-slate-800 bg-slate-950 text-slate-400')
+                    }
                   >
                     {tab.label}
                   </button>
                 ))}
               </div>
 
-              {/* Conditional Sub-Options for WEEKLY */}
               {newMedFreqType === 'weekly' && (
                 <div className="p-3 rounded-xl bg-slate-950 border border-slate-800 space-y-2">
                   <div className="text-[11px] text-slate-400">Select which days of the week:</div>
@@ -1197,11 +1444,12 @@ export default function App() {
                               prev.includes(w.day) ? prev.filter((d) => d !== w.day) : [...prev, w.day]
                             )
                           }
-                          className={`py-2 rounded-lg text-xs font-bold border transition cursor-pointer ${
-                            active
+                          className={
+                            'py-2 rounded-lg text-xs font-bold border transition cursor-pointer ' +
+                            (active
                               ? 'bg-indigo-600 border-indigo-400 text-white'
-                              : 'bg-slate-900 border-slate-800 text-slate-400'
-                          }`}
+                              : 'bg-slate-900 border-slate-800 text-slate-400')
+                          }
                         >
                           {w.name}
                         </button>
@@ -1211,7 +1459,6 @@ export default function App() {
                 </div>
               )}
 
-              {/* Conditional Sub-Options for CUSTOM SCHEDULE (Every N Days & Start/End Date) */}
               {newMedFreqType === 'schedule' && (
                 <div className="p-3 rounded-xl bg-slate-950 border border-slate-800 space-y-3 text-xs">
                   <div className="flex items-center justify-between gap-2">
@@ -1256,7 +1503,10 @@ export default function App() {
             <div className="flex justify-end gap-2 pt-2 border-t border-slate-800">
               <button
                 type="button"
-                onClick={() => setShowAddMed(false)}
+                onClick={() => {
+                  setShowMedModal(false);
+                  setEditingMedId(null);
+                }}
                 className="px-4 py-2 rounded-xl text-xs bg-slate-800 text-slate-300 cursor-pointer"
               >
                 Cancel
@@ -1265,7 +1515,7 @@ export default function App() {
                 type="submit"
                 className="px-4 py-2 rounded-xl text-xs bg-indigo-600 hover:bg-indigo-500 text-white font-semibold cursor-pointer"
               >
-                Save Tablet
+                {editingMedId ? 'Update Tablet' : 'Save Tablet'}
               </button>
             </div>
           </form>
@@ -1274,7 +1524,7 @@ export default function App() {
 
       {/* Bottom Navigation */}
       <nav className="fixed bottom-0 inset-x-0 z-30 bg-slate-900/95 backdrop-blur-md border-t border-slate-800">
-        <div className="max-w-4xl mx-auto grid grid-cols-5 py-2">
+        <div className="max-w-6xl mx-auto grid grid-cols-5 py-2">
           {[
             { id: 'today', label: 'Today', icon: CheckCircle2 },
             { id: 'weekly', label: 'Weekly Grid', icon: Calendar },
@@ -1288,9 +1538,10 @@ export default function App() {
               <button
                 key={tab.id}
                 onClick={() => setActiveTab(tab.id)}
-                className={`flex flex-col items-center justify-center py-1 text-[11px] font-medium transition cursor-pointer ${
-                  active ? 'text-indigo-400' : 'text-slate-400 hover:text-slate-200'
-                }`}
+                className={
+                  'flex flex-col items-center justify-center py-1 text-[11px] font-medium transition cursor-pointer ' +
+                  (active ? 'text-indigo-400' : 'text-slate-400 hover:text-slate-200')
+                }
               >
                 <Icon className="w-4 h-4 mb-1" />
                 <span>{tab.label}</span>
